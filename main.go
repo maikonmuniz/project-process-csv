@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 )
 
 func main() {
@@ -30,21 +31,47 @@ func uploadCSVHandler(w http.ResponseWriter, r *http.Request) {
 	defer file.Close()
 
 	reader := csv.NewReader(file)
-
 	reader.ReuseRecord = true
 
-	for {
-		record, err := reader.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			http.Error(w, "Erro ao ler o arquivo CSV", http.StatusInternalServerError)
-			return
-		}
+	lines := make(chan []string)
+	errChan := make(chan error)
+	var wg sync.WaitGroup
 
-		fmt.Println(record)
+	go func() {
+		defer close(lines)
+		for {
+			record, err := reader.Read()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				errChan <- err
+				return
+			}
+
+			lines <- record
+		}
+	}()
+
+	const numWorkers = 10000
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for line := range lines {
+				fmt.Println(line)
+			}
+		}()
 	}
+
+	go func() {
+		for e := range errChan {
+			fmt.Println("Erro ao processar arquivo CSV:", e)
+			http.Error(w, "Erro ao processar arquivo CSV", http.StatusInternalServerError)
+		}
+	}()
+
+	wg.Wait()
 
 	fmt.Fprintln(w, "Arquivo processado com sucesso")
 }
